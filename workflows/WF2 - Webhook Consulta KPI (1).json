@@ -1,0 +1,127 @@
+{
+  "name": "WF2 - Webhook Consulta KPI",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "kpi_actual",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "98e2a83f-d4dc-4143-b7e1-9842210bf36f",
+      "name": "GET /webhook/kpi_actual",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "kpi-actual-endpoint"
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $input.first().json;\n\nif (!row || !row.kpi_name) {\n  return [{\n    json: {\n      error: 'No hay datos disponibles aún. Ejecuta primero WF1.',\n      timestamp: new Date().toISOString()\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    kpi_name:  row.kpi_name,\n    kpi_value: parseFloat(row.kpi_value),\n    status:    row.status,\n    threshold: parseFloat(row.threshold),\n    timestamp: row.timestamp\n  }\n}];\n"
+      },
+      "id": "6dd1f2f9-2c69-46cb-8155-6fc9bd02ac4e",
+      "name": "Formatear Respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "87d2868a-3de2-4937-91b0-d7bd3d12ca50",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        672,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT kpi_name, kpi_value, status, threshold, timestamp\nFROM kpi_history\nWHERE kpi_name = 'catalog_quality_score'\nORDER BY timestamp DESC\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "8aa6511c-f5d1-49fe-b196-6221fcce4c91",
+      "name": "SELECT último KPI",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        224,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "cRNcMI3VGgZ5LeYh",
+          "name": "Postgres PRUEBA"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "GET /webhook/kpi_actual": {
+      "main": [
+        [
+          {
+            "node": "SELECT último KPI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatear Respuesta": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SELECT último KPI": {
+      "main": [
+        [
+          {
+            "node": "Formatear Respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "db8536e5-5ca5-493c-a142-a133ae5376ae",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2a47582652714b2bd792b2e814267f64cba5d12637c7ef29fab4b3ec12371787"
+  },
+  "id": "rMYRchNf8f7ZkNiy",
+  "tags": []
+}

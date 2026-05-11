@@ -1,0 +1,267 @@
+{
+  "name": "WF 4 Cargue de inventario",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "0ee3c7e2-1284-47a6-97be-f478ff76438b",
+      "name": "Schedule Trigger (cada 6h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1424,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://dummyjson.com/products?limit=100",
+        "options": {}
+      },
+      "id": "232c44d0-9f6a-4607-8c62-15a3fd1dc637",
+      "name": "GET DummyJSON Products",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1152,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const products = $input.first().json.products;\nconst now = new Date().toISOString();\nconst items = [];\n\nfor (const p of products) {\n    items.push({\n        json: {\n            id: p.id,\n            title: p.title,\n            description: p.description,\n            category: p.category,\n            price: p.price,\n            discount_percentage: p.discountPercentage,\n            rating: p.rating,\n            stock: p.stock,\n            brand: p.brand || null,\n            sku: p.sku,\n            availability_status: p.availabilityStatus,\n            created_at: now\n        }\n    });\n}\n\nreturn items;"
+      },
+      "id": "7d83873c-e290-46ee-9c11-bd8bc80d05e1",
+      "name": "Calcular KPIs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list",
+          "cachedResultName": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "products",
+          "mode": "list",
+          "cachedResultName": "products"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.id }}",
+            "title": "={{ $json.title }}",
+            "description": "={{ $json.description }}",
+            "category": "={{ $json.category }}",
+            "price": "={{ $json.price }}",
+            "discount_percentage": "={{ $json.discount_percentage }}",
+            "rating": "={{ $json.rating }}",
+            "stock": "={{ $json.stock }}",
+            "brand": "={{ $json.brand }}",
+            "sku": "={{ $json.sku }}",
+            "availability_status": "={{ $json.availability_status }}",
+            "created_at": "={{ $json.created_at }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": true,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "price",
+              "displayName": "price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "discount_percentage",
+              "displayName": "discount_percentage",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rating",
+              "displayName": "rating",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "stock",
+              "displayName": "stock",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "brand",
+              "displayName": "brand",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sku",
+              "displayName": "sku",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "availability_status",
+              "displayName": "availability_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "fe96fd43-50ad-41a3-9eab-4a3a909ed186",
+      "name": "INSERT kpi_history",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -608,
+        336
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "cRNcMI3VGgZ5LeYh",
+          "name": "Postgres PRUEBA"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger (cada 6h)": {
+      "main": [
+        [
+          {
+            "node": "GET DummyJSON Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET DummyJSON Products": {
+      "main": [
+        [
+          {
+            "node": "Calcular KPIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calcular KPIs": {
+      "main": [
+        [
+          {
+            "node": "INSERT kpi_history",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "INSERT kpi_history": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "5553ace9-a424-495f-bb21-42b322dfd738",
+  "meta": {
+    "instanceId": "2a47582652714b2bd792b2e814267f64cba5d12637c7ef29fab4b3ec12371787"
+  },
+  "id": "HFUXNLNxZRVS8aOl",
+  "tags": []
+}

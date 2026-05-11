@@ -1,0 +1,342 @@
+{
+  "name": "WF1 - KPIs",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "2e405708-a2e1-47a8-b162-7ae5f11de84a",
+      "name": "Schedule Trigger (cada 6h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1184,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://dummyjson.com/products?limit=100",
+        "options": {}
+      },
+      "id": "3742d4b2-94cf-4628-b940-e6c2a4fce174",
+      "name": "GET DummyJSON Products",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -912,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==================================================\n// KPI 1 - Catalog Quality Score (Data Quality)\n// ==================================================\nconst products = $input.first().json.products;\nconst total = products.length;\n\n// % productos con brand\nconst withBrand = products.filter(p => p.brand && p.brand.trim() !== '').length;\nconst pctBrand = withBrand / total;\n\n// % productos con images (no vacío)\nconst withImages = products.filter(p => Array.isArray(p.images) && p.images.length > 0).length;\nconst pctImages = withImages / total;\n\n// % productos con dimensions completas\nconst withDimensions = products.filter(p =>\n  p.dimensions &&\n  p.dimensions.width !== undefined &&\n  p.dimensions.height !== undefined &&\n  p.dimensions.depth !== undefined\n).length;\nconst pctDimensions = withDimensions / total;\n\n// KPI general = promedio de los 3 porcentajes\nconst catalogQualityScore = (pctBrand + pctImages + pctDimensions) / 3;\n\n// ==================================================\n// KPI 2 - Score de Prioridad de Reposición\n// priority = low_stock_flag * rating * price\n// low_stock_flag = 1 si stock < 10, sino 0\n// ==================================================\nconst productsWithPriority = products.map(p => {\n  const lowStockFlag = p.stock < 10 ? 1 : 0;\n  const priorityScore = lowStockFlag * (p.rating || 0) * (p.price || 0);\n  return {\n    id: p.id,\n    title: p.title,\n    stock: p.stock,\n    rating: p.rating,\n    price: p.price,\n    brand: p.brand,\n    sku: p.sku,\n    lowStockFlag,\n    priorityScore\n  };\n});\n\n// Top 5 productos críticos (mayor priority score, solo low_stock)\nconst top5Critical = productsWithPriority\n  .filter(p => p.lowStockFlag === 1)\n  .sort((a, b) => b.priorityScore - a.priorityScore)\n  .slice(0, 5);\n\n// Promedio de priority score (solo productos con low stock)\nconst lowStockProducts = productsWithPriority.filter(p => p.lowStockFlag === 1);\nconst avgPriorityScore = lowStockProducts.length > 0\n  ? lowStockProducts.reduce((sum, p) => sum + p.priorityScore, 0) / lowStockProducts.length\n  : 0;\n\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    timestamp: now,\n    totalProducts: total,\n    // KPI 1\n    catalogQualityScore: parseFloat(catalogQualityScore.toFixed(4)),\n    pctBrand: parseFloat(pctBrand.toFixed(4)),\n    pctImages: parseFloat(pctImages.toFixed(4)),\n    pctDimensions: parseFloat(pctDimensions.toFixed(4)),\n    // KPI 2\n    avgPriorityScore: parseFloat(avgPriorityScore.toFixed(4)),\n    top5Critical,\n    // Umbrales\n    thresholdQuality: 0.80,   // alerta si quality < 80%\n    thresholdPriority: 50.0   // alerta si avg priority > 50\n  }\n}];\n"
+      },
+      "id": "85acaa11-1d16-4fed-b7fa-13ada46dc34d",
+      "name": "Calcular KPIs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -672,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO kpi_history (kpi_name, kpi_value, status, threshold, timestamp)\nVALUES\n  ('catalog_quality_score', {{ $('Calcular KPIs').item.json.catalogQualityScore }}, '{{ $('Calcular KPIs').item.json.catalogQualityScore < $('Calcular KPIs').item.json.thresholdQuality ? \"ALERTA\" : \"OK\" }}', {{ $('Calcular KPIs').item.json.thresholdQuality }}, '{{ $('Calcular KPIs').item.json.timestamp }}'),\n  ('avg_priority_score',     {{ $('Calcular KPIs').item.json.avgPriorityScore }},     '{{ $('Calcular KPIs').item.json.avgPriorityScore > $('Calcular KPIs').item.json.thresholdPriority ? \"ALERTA\" : \"OK\" }}',  {{ $('Calcular KPIs').item.json.thresholdPriority }}, '{{ $('Calcular KPIs').item.json.timestamp }}');",
+        "options": {}
+      },
+      "id": "49c135ae-7985-40ec-bf8f-300a89c87e94",
+      "name": "INSERT kpi_history",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -96,
+        -128
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "cRNcMI3VGgZ5LeYh",
+          "name": "Postgres PRUEBA"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO reposition_priority (execution_ts, product_id, product_title, stock, rating, price, priority_score, rank_position)\nSELECT\n  '{{ $('Calcular KPIs').item.json.timestamp }}' as execution_ts,\n  (product->>'id')::INT,\n  product->>'title',\n  (product->>'stock')::INT,\n  (product->>'rating')::DECIMAL,\n  (product->>'price')::DECIMAL,\n  (product->>'priorityScore')::DECIMAL,\n  row_number\nFROM json_array_elements('{{ JSON.stringify($('Calcular KPIs').item.json.top5Critical) }}'::json) WITH ORDINALITY AS t(product, row_number);",
+        "options": {}
+      },
+      "id": "65194eef-a823-46a8-8cf2-705ccecce2f0",
+      "name": "INSERT reposition_priority",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        336,
+        -128
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "cRNcMI3VGgZ5LeYh",
+          "name": "Postgres PRUEBA"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "juanandresvm14@gmail.com",
+        "subject": "=AVISO: El puntaje de calidad de productos esta por debajo de lo reglamentado",
+        "message": "=<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=yes\">\n  <title>Control de Calidad | Productos: Imágenes, Tallas y Marcas</title>\n  <style>\n    * {\n      margin: 0;\n      padding: 0;\n      box-sizing: border-box;\n    }\n\n    body {\n      background-color: #ffffff;\n      font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;\n      color: #000000;\n      line-height: 1.5;\n      padding: 2rem 1.5rem;\n    }\n\n    /* Contenedor principal monocromático */\n    .dashboard {\n      max-width: 1280px;\n      margin: 0 auto;\n      background: #ffffff;\n      border: 1px solid #111111;\n      border-radius: 2rem;\n      box-shadow: 0 20px 35px -12px rgba(0,0,0,0.15);\n      overflow: hidden;\n      transition: all 0.2s ease;\n    }\n\n    /* Header Black & White */\n    .header {\n      background: #000000;\n      color: #ffffff;\n      padding: 2rem 2rem 1.8rem 2rem;\n      border-bottom: 1px solid #2c2c2c;\n    }\n\n    .header h1 {\n      font-size: 1.9rem;\n      font-weight: 700;\n      letter-spacing: -0.02em;\n      display: flex;\n      align-items: center;\n      gap: 0.75rem;\n      flex-wrap: wrap;\n    }\n\n    .header h1 span {\n      background: #ffffff;\n      color: #000000;\n      font-size: 1.1rem;\n      font-weight: 600;\n      padding: 0.2rem 0.8rem;\n      border-radius: 40px;\n    }\n\n    .subhead {\n      font-size: 1rem;\n      opacity: 0.85;\n      margin-top: 0.8rem;\n      border-left: 3px solid #ffffff;\n      padding-left: 1rem;\n      font-weight: 400;\n    }\n\n    /* alerta principal */\n    .alert-banner {\n      background: #f5f5f5;\n      margin: 1.8rem 2rem 0 2rem;\n      padding: 1rem 1.5rem;\n      border-left: 6px solid #000000;\n      display: flex;\n      flex-wrap: wrap;\n      justify-content: space-between;\n      align-items: center;\n      gap: 1rem;\n    }\n\n    .alert-text {\n      font-weight: 600;\n      font-size: 1.1rem;\n    }\n\n    .alert-text strong {\n      background: #000000;\n      color: white;\n      padding: 0.1rem 0.5rem;\n      font-weight: 700;\n    }\n\n    .badge-warning {\n      font-family: monospace;\n      background: #e6e6e6;\n      padding: 0.3rem 1rem;\n      border-radius: 30px;\n      font-size: 0.85rem;\n      font-weight: 500;\n    }\n\n    /* contenido en grilla */\n    .content-grid {\n      padding: 2rem;\n      display: grid;\n      grid-template-columns: 1fr 1fr;\n      gap: 2rem;\n    }\n\n    /* tarjetas comunes blanco-negro */\n    .card {\n      border: 1px solid #cccccc;\n      border-radius: 1.25rem;\n      background: #ffffff;\n      transition: 0.1s linear;\n      overflow: hidden;\n    }\n\n    .card-header {\n      border-bottom: 1px solid #e5e5e5;\n      padding: 1.2rem 1.5rem;\n      background: #fefefe;\n    }\n\n    .card-header h2 {\n      font-size: 1.4rem;\n      font-weight: 600;\n      display: flex;\n      align-items: center;\n      gap: 0.6rem;\n    }\n\n    .card-body {\n      padding: 1.5rem;\n    }\n\n    /* medidores (progress bars) */\n    .metric-item {\n      margin-bottom: 1.8rem;\n    }\n\n    .metric-label {\n      display: flex;\n      justify-content: space-between;\n      font-weight: 500;\n      margin-bottom: 0.5rem;\n      font-size: 0.95rem;\n    }\n\n    .progress-bar-bg {\n      height: 0.6rem;\n      background-color: #eaeaea;\n      border-radius: 20px;\n      overflow: hidden;\n      margin: 0.3rem 0 0.5rem 0;\n    }\n\n    .progress-fill {\n      background-color: #000000;\n      width: 0%;\n      height: 100%;\n      border-radius: 20px;\n    }\n\n    .target-marker {\n      font-size: 0.75rem;\n      text-align: right;\n      margin-top: 0.25rem;\n      color: #4d4d4d;\n      border-top: 1px dashed #bbbbbb;\n      display: inline-block;\n      width: 100%;\n      padding-top: 0.3rem;\n    }\n\n    .global-score {\n      background: #f2f2f2;\n      border-radius: 1rem;\n      padding: 0.8rem 1rem;\n      margin-top: 1.2rem;\n      text-align: center;\n    }\n\n    .global-score p {\n      font-weight: 600;\n    }\n\n    .big-number {\n      font-size: 2.2rem;\n      font-weight: 800;\n      line-height: 1;\n    }\n\n    /* lista de acciones */\n    .action-list {\n      list-style: none;\n      margin-top: 0.5rem;\n    }\n\n    .action-list li {\n      display: flex;\n      align-items: center;\n      gap: 1rem;\n      padding: 1rem 0;\n      border-bottom: 1px solid #ececec;\n    }\n\n    .action-icon {\n      font-size: 1.8rem;\n      min-width: 48px;\n      text-align: center;\n      filter: grayscale(100%);\n    }\n\n    .action-content {\n      flex: 1;\n    }\n\n    .action-title {\n      font-weight: 700;\n      margin-bottom: 0.2rem;\n    }\n\n    .action-desc {\n      font-size: 0.85rem;\n      color: #3a3a3a;\n    }\n\n    .btn {\n      background: #000000;\n      border: 1px solid #000000;\n      color: white;\n      padding: 0.5rem 1.2rem;\n      border-radius: 2rem;\n      font-weight: 500;\n      font-size: 0.8rem;\n      cursor: pointer;\n      transition: 0.2s;\n      text-decoration: none;\n      display: inline-block;\n      text-align: center;\n    }\n\n    .btn-outline {\n      background: transparent;\n      color: #000000;\n      border: 1px solid #000000;\n    }\n\n    .btn-outline:hover {\n      background: #000000;\n      color: white;\n    }\n\n    .btn:hover {\n      background: #2c2c2c;\n      border-color: #2c2c2c;\n    }\n\n    /* tabla de ejemplo productos */\n    .sample-table {\n      width: 100%;\n      border-collapse: collapse;\n      font-size: 0.85rem;\n    }\n\n    .sample-table th, .sample-table td {\n      text-align: left;\n      padding: 0.7rem 0.3rem;\n      border-bottom: 1px solid #dddddd;\n    }\n\n    .sample-table th {\n      font-weight: 700;\n      color: #000000;\n    }\n\n    .missing {\n      font-weight: 500;\n      background: #eeeeee;\n      padding: 0.2rem 0.5rem;\n      border-radius: 20px;\n      font-size: 0.7rem;\n      display: inline-block;\n    }\n\n    .footer-note {\n      background: #fafafa;\n      border-top: 1px solid #dddddd;\n      padding: 1.2rem 2rem;\n      text-align: center;\n      font-size: 0.8rem;\n      color: #2b2b2b;\n    }\n\n    /* ajustes responsive */\n    @media (max-width: 780px) {\n      .content-grid {\n        grid-template-columns: 1fr;\n        gap: 1.5rem;\n        padding: 1.5rem;\n      }\n      .header h1 {\n        font-size: 1.5rem;\n      }\n      .alert-banner {\n        flex-direction: column;\n        align-items: flex-start;\n        margin: 1.5rem 1.2rem 0 1.2rem;\n      }\n      .dashboard {\n        border-radius: 1.5rem;\n      }\n      .card-header h2 {\n        font-size: 1.2rem;\n      }\n    }\n\n    hr {\n      border: none;\n      border-top: 1px solid #e0e0e0;\n      margin: 0.5rem 0;\n    }\n\n    .threshold-line {\n      font-size: 0.7rem;\n      font-weight: 500;\n      background: #ffffff;\n    }\n\n    .inline-icon {\n      filter: grayscale(1);\n    }\n  </style>\n</head>\n<body>\n\n<div class=\"dashboard\">\n  <div class=\"header\">\n    <h1>\n      📊 Auditoría de productos\n      <span>Calidad < 80%</span>\n    </h1>\n    <div class=\"subhead\">\n      Integridad de la información por debajo del objetivo planificado. Se requiere cargar imágenes, tamaños y marcas.\n    </div>\n  </div>\n\n  <div class=\"alert-banner\">\n    <div class=\"alert-text\">\n      ⚠️ <strong>Acción obligatoria</strong> : Subir imágenes, tallas (tamaños) y marcas de los productos.\n    </div>\n    <div class=\"badge-warning\">\n      Planificado: 80% de completitud | Actual: 64.5%\n    </div>\n  </div>\n\n  <div class=\"content-grid\">\n    <!-- Columna izquierda: indicadores de calidad -->\n    <div class=\"card\">\n      <div class=\"card-header\">\n        <h2>\n          📉 MÉTRICAS DE CALIDAD\n        </h2>\n      </div>\n      <div class=\"card-body\">\n        <!-- Imagenes -->\n        <div class=\"metric-item\">\n          <div class=\"metric-label\">\n            <span>🖼️ Imágenes de producto</span>\n            <span>54%</span>\n          </div>\n          <div class=\"progress-bar-bg\">\n            <div class=\"progress-fill\" style=\"width: 54%;\"></div>\n          </div>\n          <div class=\"target-marker\">\n            Meta 80% → Faltan +26% (subir imágenes)\n          </div>\n        </div>\n\n        <!-- Tamaños / tallas -->\n        <div class=\"metric-item\">\n          <div class=\"metric-label\">\n            <span>📏 Tallas / Tamaños</span>\n            <span>62%</span>\n          </div>\n          <div class=\"progress-bar-bg\">\n            <div class=\"progress-fill\" style=\"width: 62%;\"></div>\n          </div>\n          <div class=\"target-marker\">\n            Meta 80% → +18% para cumplir, registrar tamaños faltantes\n          </div>\n        </div>\n\n        <!-- Marcas -->\n        <div class=\"metric-item\">\n          <div class=\"metric-label\">\n            <span>🏷️ Marcas</span>\n            <span>71%</span>\n          </div>\n          <div class=\"progress-bar-bg\">\n            <div class=\"progress-fill\" style=\"width: 71%;\"></div>\n          </div>\n          <div class=\"target-marker\">\n            Meta 80% → Necesario completar marcas de productos\n          </div>\n        </div>\n\n        <div class=\"global-score\">\n          <p>📊 Índice general de calidad de información</p>\n          <div class=\"big-number\">62.3%</div>\n          <div style=\"font-size:0.8rem; margin-top: 0.4rem;\">vs objetivo <strong>80%</strong> → déficit de -17.7%</div>\n          <hr style=\"margin: 0.8rem 0;\">\n          <div style=\"font-size:0.85rem; font-weight:500;\">\n            Para alcanzar el 80% se requiere: <br>✔️ Subir imágenes faltantes &nbsp; | &nbsp; ✔️ Completar tallas &nbsp; | &nbsp; ✔️ Asignar marcas\n          </div>\n        </div>\n      </div>\n    </div>\n\n    <!-- Columna derecha: Acciones específicas e información de productos -->\n    <div class=\"card\">\n      <div class=\"card-header\">\n        <h2>\n          📋 TAREAS PENDIENTES\n        </h2>\n      </div>\n      <div class=\"card-body\">\n        <ul class=\"action-list\">\n          <li>\n            <div class=\"action-icon\">🖼️</div>\n            <div class=\"action-content\">\n              <div class=\"action-title\">Subir imágenes de productos</div>\n              <div class=\"action-desc\">El 46% de los productos no tiene imagen asociada. Carga imágenes en lote o individual.</div>\n            </div>\n            <button class=\"btn btn-outline\" id=\"mockUploadImgBtn\">Subir ahora</button>\n          </li>\n          <li>\n            <div class=\"action-icon\">📏</div>\n            <div class=\"action-content\">\n              <div class=\"action-title\">Registrar tamaños / tallas</div>\n              <div class=\"action-desc\">Faltan especificaciones: tallas (S, M, L, XL) / medidas. 38% productos sin talla definida.</div>\n            </div>\n            <button class=\"btn btn-outline\" id=\"mockSizesBtn\">Actualizar tallas</button>\n          </li>\n          <li>\n            <div class=\"action-icon\">🏷️</div>\n            <div class=\"action-content\">\n              <div class=\"action-title\">Completar marcas de producto</div>\n              <div class=\"action-desc\">El 29% de productos no tiene marca asignada. Sube o vincula marcas oficiales.</div>\n            </div>\n            <button class=\"btn btn-outline\" id=\"mockBrandsBtn\">Agregar marcas</button>\n          </li>\n        </ul>\n        <div style=\"margin-top: 1rem; border-top: 1px solid #e5e5e5; padding-top: 1rem;\">\n          <p style=\"font-weight: 500; margin-bottom: 0.5rem;\">⚡ Ejemplos de productos con información incompleta:</p>\n          <table class=\"sample-table\">\n            <thead>\n              <tr><th>Producto</th><th>Imagen</th><th>Talla</th><th>Marca</th></tr>\n            </thead>\n            <tbody>\n              <tr><td>Camisa Oxford</td><td><span class=\"missing\">Falta imagen</span></td><td><span class=\"missing\">Sin talla</span></td><td>✔️ Definida</td></tr>\n              <tr><td>Chaqueta impermeable</td><td>🖼️ Subida</td><td><span class=\"missing\">Falta talla</span></td><td><span class=\"missing\">Sin marca</span></td></tr>\n              <tr><td>Zapato deportivo</td><td><span class=\"missing\">Imagen pendiente</span></td><td>✔️ 39-44</td><td><span class=\"missing\">Marca no registrada</span></td></tr>\n              <tr><td>Mochila urbana</td><td><span class=\"missing\">Sin imagen</span></td><td><span class=\"missing\">Sin especificación</span></td><td><span class=\"missing\">Marca ausente</span></td></tr>\n            </tbody>\n          </table>\n          <p style=\"font-size: 0.7rem; margin-top: 0.7rem; color: #4b4b4b;\">* Más de 140 productos requieren al menos un campo faltante (imagen, talla o marca).</p>\n        </div>\n      </div>\n    </div>\n  </div>\n\n  <!-- Sección adicional de instrucciones detalladas -->\n  <div style=\"padding: 0 2rem 1.8rem 2rem;\">\n    <div class=\"card\" style=\"border: 1px solid #e0e0e0; background: #ffffff;\">\n      <div class=\"card-body\" style=\"padding: 1.2rem 1.6rem;\">\n        <div style=\"display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; align-items: center;\">\n          <div>\n            <h3 style=\"font-size: 1.1rem; font-weight: 700;\">🔍 ¿Por qué es prioritario subir imágenes, tamaños y marcas?</h3>\n            <p style=\"margin-top: 0.4rem; font-size: 0.9rem;\">La calidad actual (62.3%) está muy por debajo del objetivo del 80%. Subir imágenes, completar tallas y marcas incrementará la completitud de la ficha producto, mejorando experiencia y conversión.</p>\n          </div>\n          <div>\n            <button class=\"btn\" id=\"simulateCheckBtn\" style=\"background: black;\">📎 Ver plan de mejora</button>\n          </div>\n        </div>\n        <div style=\"background: #f7f7f7; margin-top: 1rem; padding: 0.8rem; border-radius: 1rem; font-size: 0.85rem;\">\n          <div style=\"display: flex; gap: 1rem; flex-wrap: wrap; justify-content: space-between;\">\n            <div><strong>🎯 Meta 80%</strong> → Completitud ideal</div>\n            <div><strong>📤 Subir imágenes:</strong> +22% de mejora potencial</div>\n            <div><strong>📏 Agregar tallas:</strong> +14%</div>\n            <div><strong>🏷️ Agregar marcas:</strong> +9%</div>\n          </div>\n        </div>\n      </div>\n    </div>\n  </div>\n\n  <div class=\"footer-note\">\n    ⚫⚪ Diseño en blanco y negro | Calidad de la información por debajo del 80% planificado | Es obligatorio subir imágenes, tamaños y marcas de los productos para cumplir estándar.\n  </div>\n</div>\n\n<script>\n  // Simular interacciones que refuerzan el mensaje (sin funcionalidad subida real, pero recordatorio educativo)\n  // Todos los botones muestran alertas informativas sobre la necesidad de cargar datos faltantes.\n  (function() {\n    const imgBtn = document.getElementById('mockUploadImgBtn');\n    const sizesBtn = document.getElementById('mockSizesBtn');\n    const brandsBtn = document.getElementById('mockBrandsBtn');\n    const planBtn = document.getElementById('simulateCheckBtn');\n\n    if (imgBtn) {\n      imgBtn.addEventListener('click', (e) => {\n        e.preventDefault();\n        alert('📸 ACCIÓN REQUERIDA: Debes subir imágenes de productos. El catálogo actual tiene un 54% de imágenes completas. Sube archivos (JPG, PNG) para alcanzar el 80% de calidad.');\n      });\n    }\n    if (sizesBtn) {\n      sizesBtn.addEventListener('click', (e) => {\n        e.preventDefault();\n        alert('📏 TALLAS / TAMAÑOS PENDIENTES: La cobertura actual es del 62%. Es indispensable registrar las tallas de cada variante para cumplir el plan del 80%.');\n      });\n    }\n    if (brandsBtn) {\n      brandsBtn.addEventListener('click', (e) => {\n        e.preventDefault();\n        alert('🏷️ MARCAS FALTANTES: El 29% de los productos no tienen marca definida. Debes asignar marcas a todos los productos para mejorar la calidad al 80%.');\n      });\n    }\n    if (planBtn) {\n      planBtn.addEventListener('click', (e) => {\n        e.preventDefault();\n        alert('📋 PLAN PARA ALCANZAR 80% DE CALIDAD:\\n\\n1. Subir imágenes faltantes (actual 54% → mínimo 80%).\\n2. Completar campo talla/tamaño en todos los productos (62% → 80%).\\n3. Asignar marca a cada SKU (71% → 80%).\\n\\nLa prioridad es cargar estos tres atributos para subir el índice general.');\n      });\n    }\n\n    // añadir efecto visual adicional para reforzar el mensaje de \"subir\" si se hace clic en cualquier lugar de la tabla de ejemplo? no necesario, pero opcional.\n    const missingCells = document.querySelectorAll('.missing');\n    missingCells.forEach(cell => {\n      cell.style.cursor = 'pointer';\n      cell.addEventListener('click', () => {\n        alert('⚠️ Dato ausente: este producto carece de imagen, talla o marca completa. Por favor utiliza las opciones de carga para subsanar.');\n      });\n    });\n\n    // Mostrar un pequeño tooltip global (mensaje consola) solo para simular adherencia a requerimiento\n    console.log('Dashboard de calidad - Requisito: Subir imágenes, tamaños y marcas. Calidad actual < 80%');\n  })();\n</script>\n</body>\n</html>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        96,
+        -128
+      ],
+      "id": "d4e2e9ef-81cb-49a5-b068-22005dcc78a7",
+      "name": "Send a message",
+      "webhookId": "df935779-d167-434d-ab5e-5aeb036e8ec8",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "g7Uci1KZHA9eVMmz",
+          "name": "ADMIN SH"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "juanandresvm14@gmail.com",
+        "subject": "=Recarga el stock de {{ $json.product_title }}",
+        "message": "=<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <title>Recarga de stock</title>\n  <style>\n    * {\n      margin: 0;\n      padding: 0;\n      box-sizing: border-box;\n    }\n\n    body {\n      background-color: #f5f5f7;\n      font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif;\n      line-height: 1.4;\n      padding: 2rem 1rem;\n      color: #1d1d1f;\n    }\n\n    .container {\n      max-width: 560px;\n      margin: 0 auto;\n      background: #ffffff;\n      border-radius: 1.5rem;\n      overflow: hidden;\n      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.02), 0 2px 4px rgba(0, 0, 0, 0.02);\n      border: 0.5px solid #e9e9ef;\n    }\n\n    .content {\n      padding: 2rem;\n    }\n\n    .badge {\n      font-size: 0.7rem;\n      font-weight: 500;\n      text-transform: uppercase;\n      letter-spacing: 0.5px;\n      color: #86868b;\n      margin-bottom: 1.2rem;\n    }\n\n    h1 {\n      font-size: 1.8rem;\n      font-weight: 600;\n      letter-spacing: -0.02em;\n      margin-bottom: 1.8rem;\n      color: #000000;\n    }\n\n    .info-grid {\n      display: flex;\n      flex-wrap: wrap;\n      gap: 1.2rem;\n      margin-bottom: 2rem;\n      border-bottom: 1px solid #e9e9ef;\n      padding-bottom: 1.5rem;\n    }\n\n    .info-item {\n      flex: 1;\n      min-width: 110px;\n    }\n\n    .info-label {\n      font-size: 0.7rem;\n      font-weight: 500;\n      color: #6e6e73;\n      text-transform: uppercase;\n      letter-spacing: 0.3px;\n      margin-bottom: 0.3rem;\n    }\n\n    .info-value {\n      font-size: 1.6rem;\n      font-weight: 600;\n      color: #1d1d1f;\n    }\n\n    .info-unit {\n      font-size: 0.8rem;\n      font-weight: 400;\n      color: #86868b;\n      margin-left: 2px;\n    }\n\n    .stock-bar {\n      margin: 1rem 0 1.5rem 0;\n    }\n\n    .stock-bar-header {\n      display: flex;\n      justify-content: space-between;\n      font-size: 0.75rem;\n      font-weight: 500;\n      color: #424245;\n      margin-bottom: 0.4rem;\n    }\n\n    .bar-bg {\n      background: #e9e9ef;\n      border-radius: 20px;\n      height: 6px;\n      overflow: hidden;\n    }\n\n    .bar-fill {\n      background: #1d1d1f;\n      width: 0%;\n      height: 100%;\n      border-radius: 20px;\n    }\n\n    .priority-card {\n      background: #f9f9fb;\n      border-radius: 1rem;\n      padding: 1rem 1.2rem;\n      margin: 1.5rem 0 2rem 0;\n      display: flex;\n      justify-content: space-between;\n      align-items: center;\n      flex-wrap: wrap;\n      border: 0.5px solid #efeff4;\n    }\n\n    .priority-label {\n      font-size: 0.75rem;\n      font-weight: 500;\n      color: #6e6e73;\n      letter-spacing: 0.3px;\n    }\n\n    .priority-score {\n      font-size: 1.5rem;\n      font-weight: 600;\n      background: #ffffff;\n      padding: 0.2rem 1rem;\n      border-radius: 2rem;\n      border: 0.5px solid #e3e3e8;\n      color: #000;\n    }\n\n    .recharge-section {\n      margin-top: 0.5rem;\n    }\n\n    .recharge-title {\n      font-weight: 500;\n      font-size: 0.85rem;\n      margin-bottom: 0.8rem;\n      color: #1d1d1f;\n    }\n\n    .recharge-controls {\n      display: flex;\n      flex-wrap: wrap;\n      gap: 0.7rem;\n      align-items: center;\n    }\n\n    .recharge-input {\n      flex: 2;\n      min-width: 130px;\n      background: #ffffff;\n      border: 1px solid #d2d2d7;\n      border-radius: 40px;\n      padding: 0.7rem 1rem;\n      font-size: 0.9rem;\n      font-family: inherit;\n      color: #1d1d1f;\n    }\n\n    .recharge-button {\n      background: #ffffff;\n      border: 1px solid #1d1d1f;\n      border-radius: 40px;\n      padding: 0.7rem 1.3rem;\n      font-weight: 500;\n      font-size: 0.8rem;\n      color: #1d1d1f;\n      text-decoration: none;\n      display: inline-block;\n    }\n\n    .divider {\n      height: 1px;\n      background: #eeeeef;\n      margin: 1.8rem 0 1rem 0;\n    }\n\n    .footer {\n      font-size: 0.65rem;\n      color: #8e8e93;\n      text-align: center;\n      margin-top: 1rem;\n    }\n\n    @media (max-width: 480px) {\n      .content { padding: 1.5rem; }\n      h1 { font-size: 1.5rem; }\n      .info-value { font-size: 1.3rem; }\n    }\n  </style>\n</head>\n<body>\n  <div class=\"container\">\n    <div class=\"content\">\n      <div class=\"badge\">GESTION DE INVENTARIO</div>\n      <h1>{{ $json.product_title }}</h1>\n\n      <div class=\"info-grid\">\n        <div class=\"info-item\">\n          <div class=\"info-label\">STOCK ACTUAL</div>\n          <div class=\"info-value\">{{ $json.stock }} <span class=\"info-unit\">unidades</span></div>\n        </div>\n        <div class=\"info-item\">\n          <div class=\"info-label\">PRECIO (USD)</div>\n          <div class=\"info-value\">{{ $json.price }} <span class=\"info-unit\"></span></div>\n        </div>\n      </div>\n\n      <div class=\"stock-bar\">\n        <div class=\"stock-bar-header\">\n          <span>Nivel de stock</span>\n          <span>--</span>\n        </div>\n        <div class=\"bar-bg\">\n          <div class=\"bar-fill\" style=\"width: 0%;\"></div>\n        </div>\n      </div>\n\n      <div class=\"priority-card\">\n        <div class=\"priority-label\">PUNTUACION DE PRIORIDAD</div>\n        <div class=\"priority-score\">{{ $json.priority_score }}</div>\n      </div>\n\n      <div class=\"recharge-section\">\n        <div class=\"recharge-title\">Recargar stock</div>\n        <div class=\"recharge-controls\">\n          <input type=\"text\" class=\"recharge-input\" placeholder=\"Cantidad a anadir\" value=\"5\" readonly disabled>\n          <span class=\"recharge-button\">Anadir y actualizar</span>\n        </div>\n        <div style=\"font-size: 0.7rem; color: #8e8e93; margin-top: 0.8rem;\">\n          * Este es un formulario estático. La recarga se gestiona en el sistema.\n        </div>\n      </div>\n\n      <div class=\"divider\"></div>\n      <div class=\"footer\">\n        Sistema de recarga de stock · valores actualizados\n      </div>\n    </div>\n  </div>\n</body>\n</html>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        768,
+        -128
+      ],
+      "id": "dcca1ec7-9440-4210-b498-7a2e0f20110d",
+      "name": "Send a message1",
+      "webhookId": "df935779-d167-434d-ab5e-5aeb036e8ec8",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "g7Uci1KZHA9eVMmz",
+          "name": "ADMIN SH"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "bad02987-1b78-4f30-b289-147671f32cf1",
+              "leftValue": "={{ $json.catalogQualityScore }}",
+              "rightValue": "={{ $json.thresholdQuality }}",
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            },
+            {
+              "id": "7d01010a-3c3c-45e6-b277-42e61f131627",
+              "leftValue": "={{ $json.avgPriorityScore }}",
+              "rightValue": "={{ $json.thresholdPriority }}",
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -464,
+        96
+      ],
+      "id": "23a25b65-2857-4f2e-b8a7-f4f1a8587c71",
+      "name": "If"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -64,
+        224
+      ],
+      "id": "958e4588-4ad4-4d45-a4b8-0fd1e7b64673",
+      "name": "No Operation, do nothing"
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "reposition_priority",
+          "mode": "list",
+          "cachedResultName": "reposition_priority"
+        },
+        "limit": 1,
+        "sort": {
+          "values": [
+            {
+              "column": "id",
+              "direction": "DESC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "acc3935b-9c20-4913-8a17-27507d5c1e12",
+      "name": "Return_last_item",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        544,
+        -128
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "cRNcMI3VGgZ5LeYh",
+          "name": "Postgres PRUEBA"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger (cada 6h)": {
+      "main": [
+        [
+          {
+            "node": "GET DummyJSON Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET DummyJSON Products": {
+      "main": [
+        [
+          {
+            "node": "Calcular KPIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calcular KPIs": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "INSERT kpi_history",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Operation, do nothing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "INSERT kpi_history": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        [
+          {
+            "node": "INSERT reposition_priority",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "INSERT reposition_priority": {
+      "main": [
+        [
+          {
+            "node": "Return_last_item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Return_last_item": {
+      "main": [
+        [
+          {
+            "node": "Send a message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "762dcfb5-37e4-4a46-9efb-577ed95b7ff9",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2a47582652714b2bd792b2e814267f64cba5d12637c7ef29fab4b3ec12371787"
+  },
+  "id": "flgrwSc0w8ApByQH",
+  "tags": []
+}
