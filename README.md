@@ -22,7 +22,7 @@ DummyJSON API
      |
      +---> GET /webhook/kpi_actual --> SELECT en kpi_history --> respuesta JSON
 
-[WF4 - Cargue de Inventario]  (cada 6h)
+[WF4 - Cargue de Inventario]  
      |
      +---> DummyJSON API --> PostgreSQL (tabla: products)
 
